@@ -63,7 +63,9 @@ SEMANTIC = [
 
 def run_case(name, *, live=True, secret=True,
              lexical_status=200, semantic_status=200,
-             semantic_delay=0):
+             semantic_delay=0, lexical_results=None,
+             semantic_results=None,
+             query="quantum entanglement"):
     source = SOURCE.read_text(encoding="utf-8")
 
     if source.count(MARKER) != 1:
@@ -80,7 +82,10 @@ def run_case(name, *, live=True, secret=True,
                 calls["lexical"] += 1
                 status = lexical_status
                 payload = (
-                    {"ok": True, "results": LEXICAL}
+                    {"ok": True, "results": (
+                        LEXICAL if lexical_results is None
+                        else lexical_results
+                    )}
                     if status == 200
                     else {"ok": False, "error": "Mock rate limit"}
                 )
@@ -97,7 +102,10 @@ def run_case(name, *, live=True, secret=True,
                 )
                 status = semantic_status if authorized else 401
                 payload = (
-                    {"ok": True, "results": SEMANTIC}
+                    {"ok": True, "results": (
+                        SEMANTIC if semantic_results is None
+                        else semantic_results
+                    )}
                     if status == 200
                     else {"ok": False, "error": "Mock semantic failure"}
                 )
@@ -197,7 +205,7 @@ def run_case(name, *, live=True, secret=True,
             request = urllib.request.Request(
                 endpoint,
                 data=json.dumps({
-                    "query": "quantum entanglement"
+                    "query": query
                 }).encode("utf-8"),
                 headers={"Content-Type": "application/json"},
                 method="POST",
@@ -302,7 +310,164 @@ def main():
     check(calls == {"lexical": 1, "semantic": 0}, "Rate-limit call ordering")
     print("PASS: HTTP 429 stops before semantic search")
 
-    print("OVERALL: PASS (5 scenarios)")
+    # Q05: Detect semantic drift across different application domains.
+    unrelated_paper = {
+        "canonical_key": "cybersecurity-quantum-ml",
+        "doi": "10.1234/mock-cybersecurity",
+        "title": (
+            "Investigation of quantum machine learning algorithms "
+            "in noisy environment for cybersecurity applications"
+        ),
+        "abstract": (
+            "Quantum machine learning algorithms for cybersecurity "
+            "and network protection."
+        ),
+        "semantic_similarity": 0.794,
+        "cited_by_count": 5,
+    }
+
+    relevant_paper = {
+        "canonical_key": "medical-ml-diagnosis",
+        "doi": "10.1234/mock-medical-diagnosis",
+        "title": "Machine learning for medical diagnosis",
+        "abstract": (
+            "Machine learning methods for medical diagnosis "
+            "and clinical prediction."
+        ),
+        "semantic_similarity": 0.91,
+        "cited_by_count": 10,
+    }
+
+    # A high embedding similarity must not automatically
+    # override a missing application-domain concept.
+    high_similarity_unrelated = {
+        **unrelated_paper,
+        "canonical_key": "high-similarity-cybersecurity",
+        "doi": "10.1234/mock-high-similarity-cybersecurity",
+        "semantic_similarity": 0.96,
+    }
+
+    status, result, calls = run_case(
+        "Q05 semantic drift",
+        lexical_results=[],
+        semantic_results=[
+            unrelated_paper,
+            relevant_paper,
+            high_similarity_unrelated,
+        ],
+        query="machine learning in medical diagnosis",
+    )
+
+    rows = result.get("results") or []
+
+    print("Q05 HTTP:", status)
+    print("Q05 semantic candidates:", result.get("semanticCount"))
+    print("Q05 final results:", len(rows))
+    print(
+        "Q05 accepted origins:",
+        [row.get("hybridOrigin") for row in rows],
+    )
+
+    accepted_dois = {
+        str(row.get("doi") or "")
+        for row in rows
+    }
+
+    check(
+        accepted_dois == {"10.1234/mock-medical-diagnosis"},
+        "SEMANTIC DRIFT DETECTED: Expected only the relevant "
+        f"medical paper, received: {sorted(accepted_dois)}"
+    )
+
+    print("PASS: Q05 unrelated semantic result rejected")
+    # Concept balance must preserve valid multi-concept results.
+    positive_cases = [
+        (
+            "Q01 multi-concept",
+            "quantum entanglement photon experiments",
+            "Entanglement signatures in photon experiments",
+            "Experimental quantum correlations in photon systems.",
+        ),
+        (
+            "Q02 multi-concept",
+            "quantum tunneling in nuclear fusion",
+            "Tunneling effects in fusion reactions",
+            "Quantum transmission through nuclear barriers.",
+        ),
+    ]
+
+    for name, scientific_query, title, abstract in positive_cases:
+        paper = {
+            "canonical_key": name.lower().replace(" ", "-"),
+            "doi": "10.1234/" + name[:3].lower() + "-positive",
+            "title": title,
+            "abstract": abstract,
+            "semantic_similarity": 0.94,
+            "cited_by_count": 12,
+        }
+
+        status, result, calls = run_case(
+            name,
+            query=scientific_query,
+            lexical_results=[],
+            semantic_results=[paper],
+        )
+
+        rows = result.get("results") or []
+
+        check(status == 200, name + ": HTTP status")
+        check(len(rows) == 1, name + ": valid paper was excluded")
+        check(
+            rows[0].get("hybridOrigin") == "semantic-memory",
+            name + ": incorrect origin",
+        )
+        check(
+            calls == {"lexical": 1, "semantic": 1},
+            name + ": unexpected call counts",
+        )
+
+        print("PASS:", name, "relevant paper preserved")
+
+    # Synonym regression: preserve clinically relevant terminology.
+    synonym_paper = {
+        "canonical_key": "clinical-screening-ml",
+        "doi": "10.1234/mock-clinical-screening",
+        "title": (
+            "Machine learning for clinical screening "
+            "and disease detection"
+        ),
+        "abstract": (
+            "Machine learning methods for clinical screening "
+            "and detecting diseases in patients."
+        ),
+        "semantic_similarity": 0.94,
+        "cited_by_count": 20,
+    }
+
+    status, result, calls = run_case(
+        "Q05 scientific synonyms",
+        query="machine learning in medical diagnosis",
+        lexical_results=[],
+        semantic_results=[synonym_paper],
+    )
+
+    rows = result.get("results") or []
+
+    print("Synonym test HTTP:", status)
+    print("Synonym test accepted papers:", len(rows))
+
+    check(status == 200, "Synonym test HTTP status")
+    check(
+        len(rows) == 1,
+        "FALSE NEGATIVE: Clinically relevant synonym paper excluded."
+    )
+    check(
+        rows[0].get("hybridOrigin") == "semantic-memory",
+        "Synonym test incorrect origin",
+    )
+
+    print("PASS: Scientific synonym paper preserved")
+    print("OVERALL: PASS (9 scenarios)")
 
 
 if __name__ == "__main__":

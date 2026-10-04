@@ -347,6 +347,48 @@ Deno.serve(async (request) => {
         continue;
       }
 
+      // BA Relevance: Prevent semantic-only concept drift.
+      // Multi-concept queries need support from both query halves.
+      const conceptTokens = getFinalTopicTokens(query);
+
+      if (conceptTokens.length >= 4) {
+        const midpoint = Math.ceil(conceptTokens.length / 2);
+
+        const documentTokens = new Set(
+          tokenizeScientificText(
+            [
+              String(item.title ?? ""),
+              String(item.abstract ?? ""),
+            ].join(" "),
+          ),
+        );
+
+        // Limited concept aliases for scientific terminology.
+        // Keep direct token matches as the primary evidence.
+        const conceptAliases: Record<string, string[]> = {
+          medical: ["clinical", "healthcare"],
+          diagnosis: ["diagnostic", "screening"],
+        };
+
+        const supportsConcept = (token: string): boolean =>
+          documentTokens.has(token) ||
+          (conceptAliases[token] ?? []).some(
+            (alias) => documentTokens.has(alias),
+          );
+
+        const firstHalfSupported = conceptTokens
+          .slice(0, midpoint)
+          .some(supportsConcept);
+
+        const secondHalfSupported = conceptTokens
+          .slice(midpoint)
+          .some(supportsConcept);
+
+        if (!firstHalfSupported || !secondHalfSupported) {
+          continue;
+        }
+      }
+
       const citationBonus =
         Math.min(
           3,
