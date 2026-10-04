@@ -70,6 +70,7 @@ Deno.serve(async (request) => {
     );
   }
   try {
+    const totalStartedAt = performance.now();
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
@@ -107,6 +108,8 @@ Deno.serve(async (request) => {
       1,
       DEFAULT_THRESHOLD,
     );
+    // BA Science — Semantic Performance Metrics
+    const inferenceStartedAt = performance.now();
 
     const session = new Supabase.ai.Session(EMBEDDING_MODEL);
 
@@ -114,6 +117,13 @@ Deno.serve(async (request) => {
       mean_pool: true,
       normalize: true,
     });
+
+    const inferenceMs = Math.round(
+      performance.now() - inferenceStartedAt,
+    );
+
+    console.log("BA SEMANTIC inferenceMs:", inferenceMs);
+
 
     const queryEmbedding = Array.from(
       output as ArrayLike<number>,
@@ -125,6 +135,7 @@ Deno.serve(async (request) => {
       );
     }
 
+    const databaseStartedAt = performance.now();
     const results = await callMatchPapersRpc(
       supabaseUrl,
       serviceRoleKey,
@@ -132,6 +143,20 @@ Deno.serve(async (request) => {
       matchCount,
       threshold,
     );
+
+    const databaseMs = Math.round(
+      performance.now() - databaseStartedAt,
+    );
+
+    console.log("BA SEMANTIC databaseMs:", databaseMs);
+
+    const totalMs = Math.round(
+      performance.now() - totalStartedAt,
+    );
+
+    console.log("BA SEMANTIC totalMs:", totalMs);
+
+
 
     return jsonResponse({
       ok: true,
