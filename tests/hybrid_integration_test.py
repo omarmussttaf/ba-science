@@ -62,7 +62,8 @@ SEMANTIC = [
 
 
 def run_case(name, *, live=True, secret=True,
-             lexical_status=200, semantic_status=200):
+             lexical_status=200, semantic_status=200,
+             semantic_delay=0):
     source = SOURCE.read_text(encoding="utf-8")
 
     if source.count(MARKER) != 1:
@@ -86,6 +87,10 @@ def run_case(name, *, live=True, secret=True,
 
             elif self.path == "/functions/v1/semantic-search":
                 calls["semantic"] += 1
+
+                if semantic_delay:
+                    time.sleep(semantic_delay)
+
                 authorized = (
                     self.headers.get("x-ba-semantic-secret")
                     == "LOCAL_TEST_ONLY_SECRET"
@@ -106,7 +111,11 @@ def run_case(name, *, live=True, secret=True,
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                # Expected when Hybrid aborts a timed-out request.
+                pass
 
         def log_message(self, *args):
             pass
@@ -268,6 +277,23 @@ def main():
     check(calls == {"lexical": 1, "semantic": 1}, "Semantic-failure calls")
     print("PASS: Semantic failure uses lexical fallback")
 
+    started = time.monotonic()
+
+    status, result, calls = run_case(
+        "Semantic timeout",
+        semantic_delay=14,
+    )
+
+    elapsed = time.monotonic() - started
+
+    check(status == 200, "Timeout HTTP status")
+    check(result.get("mode") == "lexical-fallback", "Timeout mode")
+    check(result.get("semanticApplied") is False, "Timeout semantic flag")
+    check(calls == {"lexical": 1, "semantic": 1}, "Timeout call counts")
+    check(10 <= elapsed < 19, "Timeout duration outside expected range")
+
+    print(f"PASS: Semantic timeout uses lexical fallback ({elapsed:.2f}s)")
+
     status, result, calls = run_case(
         "Lexical rate limit", lexical_status=429
     )
@@ -276,7 +302,7 @@ def main():
     check(calls == {"lexical": 1, "semantic": 0}, "Rate-limit call ordering")
     print("PASS: HTTP 429 stops before semantic search")
 
-    print("OVERALL: PASS (4 scenarios)")
+    print("OVERALL: PASS (5 scenarios)")
 
 
 if __name__ == "__main__":
