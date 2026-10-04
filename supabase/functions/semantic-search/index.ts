@@ -190,6 +190,8 @@ async function callMatchPapersRpc(
   matchCount: number,
   threshold: number,
 ) {
+  const rpcFetchStartedAt = performance.now();
+
   const response = await fetch(
     `${supabaseUrl}/rest/v1/rpc/match_ba_papers`,
     {
@@ -207,6 +209,11 @@ async function callMatchPapersRpc(
     },
   );
 
+  console.log(
+    "BA SEMANTIC rpcFetchMs:",
+    Math.round(performance.now() - rpcFetchStartedAt),
+  );
+
   if (!response.ok) {
     const errorBody = await response.text();
     throw new Error(
@@ -214,7 +221,13 @@ async function callMatchPapersRpc(
     );
   }
 
+  const rpcParseStartedAt = performance.now();
   const rows = await response.json();
+
+  console.log(
+    "BA SEMANTIC rpcParseMs:",
+    Math.round(performance.now() - rpcParseStartedAt),
+  );
 
   if (!Array.isArray(rows)) {
     return [];
