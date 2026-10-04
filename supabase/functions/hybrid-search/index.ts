@@ -139,48 +139,41 @@ Deno.serve(async (request) => {
       );
 
       if (!semanticInternalSecret) {
-        console.error(
-          "BA Hybrid: Semantic secret is not configured.",
-        );
-
-        return jsonResponse(
-          {
-            ok: false,
-            error: "Semantic search is temporarily unavailable.",
-          },
-          503,
-        );
-      }
-
-      // BA Reliability: Limit how long Hybrid waits for AI.
-
-      try {
-        semanticResponse = await fetch(
-          `${supabaseUrl}/functions/v1/semantic-search`,
-          {
-            method: "POST",
-            headers: {
-              apikey: serviceRoleKey,
-              Authorization: `Bearer ${serviceRoleKey}`,
-              "Content-Type": "application/json",
-              "x-ba-semantic-secret": semanticInternalSecret,
-            },
-            body: JSON.stringify({
-              query,
-              match_count: 20,
-              match_threshold: 0.45,
-            }),
-            signal: AbortSignal.timeout(12_000),
-          },
-        );
-
-        semanticPayload = await safeJson(semanticResponse);
-
-      } catch (error) {
         console.warn(
-          "BA Hybrid: Semantic Search failed or timed out.",
-          error instanceof Error ? error.name : "Unknown error",
+          "BA Hybrid: Semantic secret is missing; using lexical fallback.",
         );
+      } else {
+
+        // BA Reliability: Limit how long Hybrid waits for AI.
+
+        try {
+          semanticResponse = await fetch(
+            `${supabaseUrl}/functions/v1/semantic-search`,
+            {
+              method: "POST",
+              headers: {
+                apikey: serviceRoleKey,
+                Authorization: `Bearer ${serviceRoleKey}`,
+                "Content-Type": "application/json",
+                "x-ba-semantic-secret": semanticInternalSecret,
+              },
+              body: JSON.stringify({
+                query,
+                match_count: 20,
+                match_threshold: 0.45,
+              }),
+              signal: AbortSignal.timeout(12_000),
+            },
+          );
+
+          semanticPayload = await safeJson(semanticResponse);
+
+        } catch (error) {
+          console.warn(
+            "BA Hybrid: Semantic Search failed or timed out.",
+            error instanceof Error ? error.name : "Unknown error",
+          );
+        }
       }
     }
 
