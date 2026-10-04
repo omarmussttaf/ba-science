@@ -29,3 +29,7 @@ backups/
 
 # Local editor settings
 .vscode/
+
+# Python generated files
+__pycache__/
+*.pyc
