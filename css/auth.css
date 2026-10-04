@@ -510,8 +510,15 @@ html[dir="ltr"] .auth-top h2 {
     font-family: inherit;
     font-size: inherit;
 
-    cursor: default;
+    text-decoration: none;
+    cursor: pointer;
 }
+
+.forgot-password:focus-visible {
+    outline: 2px solid var(--red-light);
+    outline-offset: 3px;
+}
+
 
 
 .forgot-password:disabled {
