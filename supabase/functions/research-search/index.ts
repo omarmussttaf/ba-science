@@ -140,6 +140,48 @@ type VisitorCredential =
   | { kind: "user-token"; token: string }
   | { kind: "invalid" };
 
+type ScientificDocumentType =
+  | "none"
+  | "article"
+  | "review"
+  | "systematic-review"
+  | "meta-analysis"
+  | "preprint"
+  | "book-chapter";
+
+
+type ScientificQueryAnalysis = {
+  ok?: boolean;
+
+  queryLanguage?: "ar" | "en" | "other";
+
+  scientificQueries?: {
+    ar?: {
+      canonical?: string;
+      variants?: string[];
+    };
+
+    en?: {
+      canonical?: string;
+      variants?: string[];
+    };
+  };
+
+  coreConcepts?: Array<{
+    en?: string;
+    ar?: string;
+    aliases?: string[];
+  }>;
+
+  protectedTerms?: string[];
+
+  constraints?: {
+    documentType?: ScientificDocumentType;
+    openAccess?: boolean;
+  };
+
+  confidence?: number;
+};
 
 function classifyVisitorCredential(
   authorization: string | null,
@@ -446,12 +488,43 @@ const visitorCredential =
       );
     }
 
-    const intent =
+    const localIntent =
       parseResearchIntent(
         query,
       );
 
+
+    const scientificAnalysis =
+      await getScientificQueryAnalysis(
+        query,
+        supabaseUrl,
+        serviceRoleKey,
+      );
+
+
+    const intent =
+      applyScientificConstraints(
+        localIntent,
+        scientificAnalysis,
+      );
+
+
+    const scientificEnglishQuery =
+      scientificAnalysis
+        ?.scientificQueries
+        ?.en
+        ?.canonical
+        ?.trim() ||
+      "";
+
+
+    const rankingQuery =
+      scientificEnglishQuery ||
+      query;
+
+
     const providerQuery =
+      scientificEnglishQuery ||
       intent.providerQuery ||
       intent.topicQuery ||
       query;
@@ -543,6 +616,7 @@ const visitorCredential =
     return jsonResponse(
       {
         query,
+        rankingQuery,
         intent,
         persistence,
         count:
@@ -589,6 +663,94 @@ const visitorCredential =
 /* =========================================================
    PROVIDER SAFETY
 ========================================================= */
+
+async function getScientificQueryAnalysis(
+  query: string,
+  supabaseUrl: string,
+  serviceRoleKey: string,
+): Promise<ScientificQueryAnalysis | null> {
+
+  const internalSecret =
+    Deno.env.get(
+      "BA_SCIENTIFIC_QUERY_INTERNAL_SECRET",
+    );
+
+
+  if (!internalSecret) {
+    return null;
+  }
+
+
+  try {
+
+    const response =
+      await fetch(
+        `${supabaseUrl}/functions/v1/scientific-query`,
+        {
+          method: "POST",
+
+          headers: {
+            apikey: serviceRoleKey,
+
+            Authorization:
+              `Bearer ${serviceRoleKey}`,
+
+            "Content-Type":
+              "application/json",
+
+            "x-ba-scientific-query-secret":
+              internalSecret,
+          },
+
+          body:
+            JSON.stringify({
+              query,
+            }),
+
+          signal:
+            AbortSignal.timeout(
+              12_000,
+            ),
+        },
+      );
+
+
+    if (!response.ok) {
+      return null;
+    }
+
+
+    const payload =
+      await response.json() as
+        ScientificQueryAnalysis;
+
+
+    if (payload?.ok !== true) {
+      return null;
+    }
+
+
+    return payload;
+
+  }
+
+  catch (error) {
+
+    console.warn(
+      "BA Search: Scientific Query unavailable; using local fallback.",
+      error instanceof Error
+        ? error.name
+        : "Unknown error",
+    );
+
+
+    return null;
+
+  }
+
+}
+
+
 
 async function safeProvider(
   name: string,
@@ -2706,6 +2868,46 @@ type ResearchIntent = {
     "article" |
     null;
 };
+
+
+function applyScientificConstraints(
+  localIntent: ResearchIntent,
+  scientificAnalysis: ScientificQueryAnalysis | null,
+): ResearchIntent {
+
+  const scientificDocumentType =
+    scientificAnalysis
+      ?.constraints
+      ?.documentType;
+
+
+  const supportedDocumentType:
+    ResearchIntent["requestedDocumentType"] =
+      scientificDocumentType === "article" ||
+      scientificDocumentType === "review" ||
+      scientificDocumentType === "systematic-review" ||
+      scientificDocumentType === "meta-analysis" ||
+      scientificDocumentType === "preprint"
+        ? scientificDocumentType
+        : null;
+
+
+  return {
+    ...localIntent,
+
+    openAccessOnly:
+      localIntent.openAccessOnly ||
+      scientificAnalysis
+        ?.constraints
+        ?.openAccess === true,
+
+    requestedDocumentType:
+      localIntent.requestedDocumentType ||
+      supportedDocumentType,
+  };
+
+}
+
 
 
 function parseResearchIntent(

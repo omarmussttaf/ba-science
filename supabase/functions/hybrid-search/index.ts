@@ -31,6 +31,12 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type",
 };
+type SearchItem = Record<string, unknown>;
+type SearchPayload = {
+  ok?: boolean;
+  results?: SearchItem[];
+  [key: string]: unknown;
+};
 
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") {
@@ -121,6 +127,11 @@ Deno.serve(async (request) => {
       );
     }
 
+    const rankingQuery =
+      typeof lexicalPayload?.rankingQuery === "string" &&
+      lexicalPayload.rankingQuery.trim()
+        ? lexicalPayload.rankingQuery.trim()
+        : query;
     // STEP 2: Optional live semantic search.
     // Disabled by default until AI inference performance is resolved.
 
@@ -128,7 +139,7 @@ Deno.serve(async (request) => {
       Deno.env.get("BA_ENABLE_LIVE_SEMANTIC") === "true";
 
     let semanticResponse: Response | null = null;
-    let semanticPayload: any = null;
+    let semanticPayload: SearchPayload | null = null;
 
     if (liveSemanticEnabled) {
 
@@ -158,7 +169,7 @@ Deno.serve(async (request) => {
                 "x-ba-semantic-secret": semanticInternalSecret,
               },
               body: JSON.stringify({
-                query,
+                query: rankingQuery,
                 match_count: 20,
                 match_threshold: 0.45,
               }),
@@ -193,7 +204,7 @@ Deno.serve(async (request) => {
           Array.isArray(lexicalPayload?.results)
             ? finalizeHybridRanking(
                 lexicalPayload.results.map(
-                  (item: any) => ({
+                  (item: SearchItem) => ({
                     ...item,
                     lexicalBaScore:
                       Number(item.baScore ?? 0),
@@ -205,7 +216,7 @@ Deno.serve(async (request) => {
                     hybridOrigin: "lexical",
                   }),
                 ),
-                query,
+                rankingQuery,
               ).slice(0, 60)
             : [],
         rankingVersion: "v0.4.0",
@@ -231,7 +242,7 @@ Deno.serve(async (request) => {
     let matchedBothCount = 0;
 
     const merged = lexicalResults.map(
-      (item: any) => {
+      (item: SearchItem) => {
         const semanticMatch =
           findSemanticMatch(item, semanticIndex);
 
@@ -311,13 +322,13 @@ Deno.serve(async (request) => {
 
       const titleCoverage =
         calculateLightweightTitleCoverage(
-          query,
+          rankingQuery,
           String(item.title ?? ""),
         );
 
       const anchorCoverage =
         calculateDomainAnchorCoverage(
-          query,
+          rankingQuery,
           [
             String(item.title ?? ""),
             String(item.abstract ?? ""),
@@ -348,12 +359,13 @@ Deno.serve(async (request) => {
       }
 
       // BA Relevance: Prevent semantic-only concept drift.
-      // Multi-concept queries need support from both query halves.
-      const conceptTokens = getFinalTopicTokens(query);
+      // Multi-concept queries require order-independent coverage.
+      const conceptTokens =
+        getFinalTopicTokens(
+          rankingQuery,
+        );
 
       if (conceptTokens.length >= 4) {
-        const midpoint = Math.ceil(conceptTokens.length / 2);
-
         const documentTokens = new Set(
           tokenizeScientificText(
             [
@@ -368,6 +380,9 @@ Deno.serve(async (request) => {
         const conceptAliases: Record<string, string[]> = {
           medical: ["clinical", "healthcare"],
           diagnosis: ["diagnostic", "screening"],
+          entanglement: ["entangled"],
+          detection: ["detecting", "detected"],
+          photon: ["photons"],
         };
 
         const supportsConcept = (token: string): boolean =>
@@ -376,15 +391,17 @@ Deno.serve(async (request) => {
             (alias) => documentTokens.has(alias),
           );
 
-        const firstHalfSupported = conceptTokens
-          .slice(0, midpoint)
-          .some(supportsConcept);
+        // Order-independent concept coverage.
+        // Require support for at least 75% of meaningful query concepts.
+        const supportedConceptCount = conceptTokens
+          .filter(supportsConcept)
+          .length;
 
-        const secondHalfSupported = conceptTokens
-          .slice(midpoint)
-          .some(supportsConcept);
+        const minimumRequiredConcepts = Math.ceil(
+          conceptTokens.length * 0.75,
+        );
 
-        if (!firstHalfSupported || !secondHalfSupported) {
+        if (supportedConceptCount < minimumRequiredConcepts) {
           continue;
         }
       }
@@ -470,7 +487,7 @@ Deno.serve(async (request) => {
     const results =
       finalizeHybridRanking(
         merged,
-        query,
+        rankingQuery,
       ).slice(0, 60);
 
     return jsonResponse({
@@ -515,10 +532,10 @@ Deno.serve(async (request) => {
 });
 
 function buildSemanticIndex(
-  results: any[],
+  results: SearchItem[],
 ) {
   const map =
-    new Map<string, any>();
+    new Map<string, SearchItem>();
 
   for (const item of results) {
     for (const key of candidateKeys(item)) {
@@ -532,8 +549,8 @@ function buildSemanticIndex(
 }
 
 function findSemanticMatch(
-  lexicalItem: any,
-  semanticIndex: Map<string, any>,
+  lexicalItem: SearchItem,
+  semanticIndex: Map<string, SearchItem>,
 ) {
   for (const key of candidateKeys(lexicalItem)) {
     const match =
@@ -548,7 +565,7 @@ function findSemanticMatch(
 }
 
 function candidateKeys(
-  item: any,
+  item: SearchItem,
 ) {
   const keys: string[] = [];
 
@@ -604,7 +621,7 @@ function candidateKeys(
 }
 
 function semanticKey(
-  item: any,
+  item: SearchItem,
 ) {
   return (
     candidateKeys(item)[0] ||
@@ -844,7 +861,7 @@ type FinalQueryIntent = {
 
 
 function finalizeHybridRanking(
-  candidates: any[],
+  candidates: SearchItem[],
   query: string,
 ) {
   const intent =
@@ -852,7 +869,7 @@ function finalizeHybridRanking(
 
   const enriched =
     candidates.map(
-      (item: any) => {
+      (item: SearchItem) => {
         const signals =
           calculateFinalRankingSignals(
             item,
@@ -934,7 +951,7 @@ function finalizeHybridRanking(
     );
 
   enriched.sort(
-    (a: any, b: any) => {
+    (a: SearchItem, b: SearchItem) => {
       const finalDifference =
         Number(b.finalRankingScore ?? 0) -
         Number(a.finalRankingScore ?? 0);
@@ -1037,7 +1054,7 @@ function analyzeFinalQueryIntent(
 
 
 function calculateFinalRankingSignals(
-  item: any,
+  item: SearchItem,
   intent: FinalQueryIntent,
 ) {
   const title =
@@ -1257,7 +1274,7 @@ function calculateFinalRankingSignals(
 
 
 function calculateFinalConceptBalance(
-  item: any,
+  item: SearchItem,
   topicTokens: string[],
 ) {
   if (
@@ -1363,7 +1380,7 @@ function titleMatchesRequestedDocumentType(
 
 
 function calculateFinalDocumentConstraint(
-  item: any,
+  item: SearchItem,
   intent: FinalQueryIntent,
   topicCentrality: number,
 ) {
@@ -1538,7 +1555,7 @@ function calculateFinalDocumentConstraint(
 
 
 function calculateRecordIntegrityAdjustment(
-  item: any,
+  item: SearchItem,
 ) {
   const title =
     normalizeScientificText(
@@ -1559,19 +1576,17 @@ function calculateRecordIntegrityAdjustment(
      a researcher normally expects from a paper-search query.
   */
   const looksLikePeerReviewRecord =
-    /^review\s+for\b/.test(title) ||
-    /\/review\d+$/i.test(doi);
-
+  /^review\s+for\b/.test(title) ||
+  /\/review\d+$/i.test(doi);
   if (looksLikePeerReviewRecord) {
     return FINAL_INTEGRITY_PENALTY;
   }
-
   return 0;
 }
 
 
 function calibrateDisplayScores(
-  ranked: any[],
+  ranked: SearchItem[],
 ) {
   let previousScore =
     DISPLAY_SCORE_MAX + 1;
@@ -1580,7 +1595,7 @@ function calibrateDisplayScores(
     Number.POSITIVE_INFINITY;
 
   return ranked.map(
-    (item: any, index: number) => {
+    (item: SearchItem, index: number) => {
       const raw =
         Number(
           item.finalRankingScore ??

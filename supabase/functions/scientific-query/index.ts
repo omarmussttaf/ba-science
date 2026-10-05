@@ -13,6 +13,45 @@ const MODEL =
   ) || "gpt-5.6-terra";
 
 
+type OpenAIResponsePayload = {
+  output_text?: string;
+  output?: Array<{
+    content?: Array<{
+      text?: string;
+    }>;
+  }>;
+  error?: {
+    message?: string;
+  };
+};
+
+type ScientificQueryFormulationInput = {
+  canonical?: unknown;
+  variants?: unknown;
+};
+
+type ScientificCoreConceptInput = {
+  en?: unknown;
+  ar?: unknown;
+  aliases?: unknown;
+};
+
+type ScientificModelResult = {
+  queryLanguage?: unknown;
+  scientificQueries?: {
+    ar?: ScientificQueryFormulationInput;
+    en?: ScientificQueryFormulationInput;
+  };
+  coreConcepts?: ScientificCoreConceptInput[];
+  protectedTerms?: unknown;
+  constraints?: {
+    documentType?: unknown;
+    openAccess?: unknown;
+  };
+  confidence?: unknown;
+};
+
+
 Deno.serve(async (req) => {
 
     // Handle CORS preflight requests.
@@ -26,8 +65,69 @@ Deno.serve(async (req) => {
     );
   }
 
+
+  if (req.method !== "POST") {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "Method not allowed",
+      },
+      405
+    );
+  }
+
+
+  // BA Security: Scientific Query is an internal service.
+  // Only trusted BA server-side functions may invoke it.
+
+  const internalSecret =
+    Deno.env.get(
+      "BA_SCIENTIFIC_QUERY_INTERNAL_SECRET"
+    );
+
+
+  if (!internalSecret) {
+
+    console.error(
+      "BA Scientific Query: Internal secret is not configured."
+    );
+
+    return jsonResponse(
+      {
+        ok: false,
+        error:
+          "Scientific query service is temporarily unavailable.",
+      },
+      503
+    );
+
+  }
+
+
+  const providedSecret =
+    req.headers.get(
+      "x-ba-scientific-query-secret"
+    );
+
+
+  if (
+    !providedSecret ||
+    providedSecret !== internalSecret
+  ) {
+
+    return jsonResponse(
+      {
+        ok: false,
+        error:
+          "Unauthorized scientific query request.",
+      },
+      401
+    );
+
+  }
+
   // BA Security: Scientific Query is disabled by default.
-  // Do not enable before authorization and rate limiting are implemented.
+  // Keep disabled until the trusted caller flow and rate limiting integration are ready.
 
   if (
     Deno.env.get("BA_ENABLE_SCIENTIFIC_QUERY") !== "true"
@@ -63,7 +163,6 @@ Deno.serve(async (req) => {
       );
 
     }
-
 
     const cleanQuery =
       query.trim();
@@ -284,7 +383,7 @@ Return exactly this structure:
 
 
   const data =
-    await response.json();
+    await response.json() as OpenAIResponsePayload;
 
 
   if (!response.ok) {
@@ -318,7 +417,7 @@ Return exactly this structure:
   }
 
 
-  let parsed;
+  let parsed: ScientificModelResult;
 
 
   try {
@@ -328,11 +427,11 @@ Return exactly this structure:
         cleanJsonText(
           outputText
         )
-      );
+      ) as ScientificModelResult;
 
   }
 
-  catch (error) {
+  catch {
 
     console.error(
       "Invalid JSON:",
@@ -358,7 +457,7 @@ Return exactly this structure:
 
 
 function extractOutputText(
-  response: any
+  response: OpenAIResponsePayload
 ) {
 
   if (
@@ -425,7 +524,7 @@ function extractOutputText(
 
 
 function normalizeResult(
-  result: any,
+  result: ScientificModelResult,
   originalQuery: string,
   detectedLanguage: string
 ) {
@@ -444,22 +543,26 @@ function normalizeResult(
     );
 
 
+  const candidateDocumentType =
+    result?.constraints
+      ?.documentType;
+
   const documentType =
+    typeof candidateDocumentType === "string" &&
     allowedTypes.has(
-      result?.constraints
-        ?.documentType
+      candidateDocumentType
     )
-      ? result.constraints.documentType
+      ? candidateDocumentType
       : "none";
 
 
   return {
 
     queryLanguage:
-      ["ar", "en", "other"]
-        .includes(
-          result?.queryLanguage
-        )
+      typeof result?.queryLanguage === "string" &&
+      ["ar", "en", "other"].includes(
+        result.queryLanguage
+      )
         ? result.queryLanguage
         : detectedLanguage,
 
@@ -516,7 +619,7 @@ function normalizeResult(
         ? result.coreConcepts
             .slice(0, 12)
             .map(
-              (concept: any) => ({
+              (concept: ScientificCoreConceptInput) => ({
                 en:
                   cleanText(
                     concept?.en
@@ -534,7 +637,7 @@ function normalizeResult(
               })
             )
             .filter(
-              (concept: any) =>
+              (concept: ScientificCoreConceptInput) =>
                 concept.en ||
                 concept.ar
             )
@@ -636,7 +739,7 @@ function detectLanguage(
 
 
 function cleanText(
-  value: any
+  value: unknown
 ) {
 
   if (
@@ -661,7 +764,7 @@ function cleanText(
 
 
 function cleanArray(
-  value: any
+  value: unknown
 ) {
 
   if (
@@ -754,7 +857,7 @@ function clamp(
 
 
 function jsonResponse(
-  data: any,
+  data: unknown,
   status = 200
 ) {
 

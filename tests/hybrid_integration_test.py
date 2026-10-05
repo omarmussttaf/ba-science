@@ -65,7 +65,8 @@ def run_case(name, *, live=True, secret=True,
              lexical_status=200, semantic_status=200,
              semantic_delay=0, lexical_results=None,
              semantic_results=None,
-             query="quantum entanglement"):
+             query="quantum entanglement",
+             ranking_query=None):
     source = SOURCE.read_text(encoding="utf-8")
 
     if source.count(MARKER) != 1:
@@ -82,10 +83,18 @@ def run_case(name, *, live=True, secret=True,
                 calls["lexical"] += 1
                 status = lexical_status
                 payload = (
-                    {"ok": True, "results": (
-                        LEXICAL if lexical_results is None
-                        else lexical_results
-                    )}
+                    {
+                        "ok": True,
+                        "rankingQuery": (
+                            ranking_query
+                            if ranking_query is not None
+                            else query
+                        ),
+                        "results": (
+                            LEXICAL if lexical_results is None
+                            else lexical_results
+                        ),
+                    }
                     if status == 200
                     else {"ok": False, "error": "Mock rate limit"}
                 )
@@ -467,7 +476,186 @@ def main():
     )
 
     print("PASS: Scientific synonym paper preserved")
-    print("OVERALL: PASS (9 scenarios)")
+    # Query word order must not weaken semantic drift protection.
+    reordered_query_paper = {
+        "canonical_key": "reordered-query-cybersecurity",
+        "doi": "10.1234/mock-reordered-cybersecurity",
+        "title": (
+            "Quantum machine learning algorithms "
+            "for cybersecurity applications"
+        ),
+        "abstract": (
+            "Machine learning in quantum cybersecurity systems."
+        ),
+        "semantic_similarity": 0.96,
+        "cited_by_count": 10,
+    }
+
+    status, result, calls = run_case(
+        "Q05 reordered query",
+        query="medical machine learning diagnosis",
+        lexical_results=[],
+        semantic_results=[reordered_query_paper],
+    )
+
+    rows = result.get("results") or []
+
+    print("Reordered query HTTP:", status)
+    print("Reordered query accepted papers:", len(rows))
+
+    check(status == 200, "Reordered query HTTP status")
+    check(
+        len(rows) == 0,
+        "QUERY ORDER DRIFT: Cybersecurity paper passed "
+        "after rearranging medical diagnosis query terms."
+    )
+
+    print("PASS: Reordered query retains domain protection")
+    # Reordering query words must also preserve relevant papers.
+    status, result, calls = run_case(
+        "Q05 reordered positive query",
+        query="medical machine learning diagnosis",
+        lexical_results=[],
+        semantic_results=[synonym_paper],
+    )
+
+    rows = result.get("results") or []
+
+    print("Reordered positive HTTP:", status)
+    print("Reordered positive accepted papers:", len(rows))
+
+    check(status == 200, "Reordered positive HTTP status")
+    check(
+        len(rows) == 1,
+        "QUERY ORDER FALSE NEGATIVE: Relevant clinical paper excluded."
+    )
+    check(
+        rows[0].get("doi") == "10.1234/mock-clinical-screening",
+        "Reordered positive returned an unexpected paper",
+    )
+    check(
+        rows[0].get("hybridOrigin") == "semantic-memory",
+        "Reordered positive incorrect origin",
+    )
+    check(
+        calls == {"lexical": 1, "semantic": 1},
+        "Reordered positive unexpected call counts",
+    )
+
+    print("PASS: Reordered query preserves relevant medical paper")
+    # Long scientific queries may contain morphological variations.
+    long_query_paper = {
+        "canonical_key": "photon-polarization-entanglement",
+        "doi": "10.1234/mock-photon-polarization",
+        "title": (
+            "Detecting entangled photons in polarization experiments"
+        ),
+        "abstract": (
+            "Quantum correlations measured using polarized "
+            "photon pairs in polarization experiments."
+        ),
+        "semantic_similarity": 0.94,
+        "cited_by_count": 18,
+    }
+
+    status, result, calls = run_case(
+        "Long scientific query",
+        query=(
+            "quantum entanglement detection using "
+            "photon polarization experiments"
+        ),
+        lexical_results=[],
+        semantic_results=[long_query_paper],
+    )
+
+    rows = result.get("results") or []
+
+    print("Long query HTTP:", status)
+    print("Long query accepted papers:", len(rows))
+
+    check(status == 200, "Long query HTTP status")
+    check(
+        len(rows) == 1,
+        "LONG QUERY FALSE NEGATIVE: Relevant scientific "
+        "paper excluded by strict concept coverage."
+    )
+
+    print("PASS: Long scientific query preserves relevant paper")
+    # Arabic relevance: High similarity alone must not admit
+    # an unrelated English paper.
+    arabic_unrelated_paper = {
+        "canonical_key": "arabic-query-unrelated-security",
+        "doi": "10.1234/mock-arabic-unrelated-security",
+        "title": "Cybersecurity Algorithms for Network Intrusion Detection",
+        "abstract": (
+            "Evaluation of cybersecurity methods for detecting "
+            "attacks in computer networks."
+        ),
+        "semantic_similarity": 0.96,
+        "cited_by_count": 25,
+    }
+
+    status, result, calls = run_case(
+        "Arabic semantic drift protection",
+        query="تجارب التشابك الكمي بين الفوتونات",
+        ranking_query="experimental quantum entanglement between photons",
+        lexical_results=[],
+        semantic_results=[arabic_unrelated_paper],
+    )
+
+    rows = result.get("results") or []
+
+    print("Arabic negative HTTP:", status)
+    print("Arabic negative accepted papers:", len(rows))
+
+    check(status == 200, "Arabic negative HTTP status")
+    check(
+        len(rows) == 0,
+        "ARABIC SEMANTIC DRIFT: Unrelated cybersecurity paper accepted."
+    )
+
+    print("PASS: Arabic query rejects unrelated English paper")
+
+    # Arabic query must retrieve relevant English scientific papers.
+    arabic_paper = {
+        "canonical_key": "arabic-quantum-entanglement",
+        "doi": "10.1234/mock-arabic-entanglement",
+        "title": (
+            "Experimental Quantum Entanglement Between Photons"
+        ),
+        "abstract": (
+            "Experimental investigation of quantum entanglement "
+            "and correlated photon pairs."
+        ),
+        "semantic_similarity": 0.96,
+        "cited_by_count": 25,
+    }
+
+    status, result, calls = run_case(
+        "Arabic to English scientific search",
+        query="تجارب التشابك الكمي بين الفوتونات",
+        ranking_query="experimental quantum entanglement between photons",
+        lexical_results=[],
+        semantic_results=[arabic_paper],
+    )
+
+    rows = result.get("results") or []
+
+    print("Arabic query HTTP:", status)
+    print("Arabic query accepted papers:", len(rows))
+
+    check(status == 200, "Arabic query HTTP status")
+    check(
+        len(rows) == 1,
+        "ARABIC FALSE NEGATIVE: Relevant English paper excluded."
+    )
+    check(
+        rows[0].get("doi") == "10.1234/mock-arabic-entanglement",
+        "Arabic query returned an unexpected paper",
+    )
+
+    print("PASS: Arabic query preserves relevant English paper")
+    print("OVERALL: PASS (13 scenarios)")
 
 
 if __name__ == "__main__":
